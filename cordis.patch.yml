@@ -1,0 +1,11 @@
+# Applied after dsh-base. It keeps the existing web service and explicitly pins
+# its fetch selection to this provider's unique id.
+
+- id: web
+  config:
+    searchProvider: deepseek-official
+    fetchProvider: policy-http
+
+- insert:
+    - id: web-fetch-policy
+      name: dsh-web-fetch-policy
