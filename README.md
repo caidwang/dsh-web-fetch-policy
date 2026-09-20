@@ -40,17 +40,23 @@ profile's `cordis.patch.yml`:
     allowedPrivateHosts:
       - 127.0.0.1
       - localhost
-      - 198.18.0.1 # Clash Fake-IP, if this exact target is intentional
       - api.corp.example
+    allowedPrivateCidrs:
+      - 198.18.0.0/16 # only when this reserved range is an intentional local target
     allowPrivateDns: true
 ```
 
 `allowedPrivateHosts` contains exact hostnames or IP literals only. Wildcards,
 URLs, CIDR ranges, ports, public IPs, unspecified addresses, and multicast
-addresses fail plugin load. An exact listed non-public literal works with the
-default `allowPrivateDns: false`. A listed `localhost` may resolve only to
-loopback addresses. A normal DNS hostname remains public-only until
-`allowPrivateDns: true` is set.
+addresses fail plugin load. `allowedPrivateCidrs` contains canonical IPv4 or
+IPv6 network ranges and can match a literal URL IP or DNS answers. For a DNS
+name, every answer must be non-public and inside an allowed CIDR; a public
+answer or an answer from another non-public range rejects the request. Both
+lists accept only connectable non-public destinations. An exact listed
+non-public literal works with the default `allowPrivateDns: false`. A listed
+`localhost` may resolve only to loopback addresses. A normal DNS hostname can
+use `allowPrivateDns: true` with an exact `allowedPrivateHosts` entry when a
+broader private-DNS exception is intended.
 
 When private DNS is enabled, every answer for the exact listed hostname must be
 connectable and non-public. A response containing both public and non-public

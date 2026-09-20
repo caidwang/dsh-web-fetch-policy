@@ -18,10 +18,11 @@ export {
   createAddressAccessPolicy,
   isNonPublicIpLiteral,
   isPublicIpAddress,
+  normalizeAllowedPrivateCidr,
   normalizeAllowedPrivateHost,
   resolvePolicyAddresses,
 } from './network.js'
-export type { AddressAccessPolicy, AddressResolver, ResolvedAddress } from './network.js'
+export type { AddressAccessPolicy, AddressResolver, AllowedPrivateCidr, ResolvedAddress } from './network.js'
 
 /** An explicit non-browser identifier sent on every request. */
 export const DEFAULT_USER_AGENT = 'dsh-web-fetch-policy/0.1 (+https://github.com/caidwang/dsh-web-fetch-policy)'
@@ -46,6 +47,8 @@ export interface Config {
   userAgent?: string
   /** Exact private IP literals, localhost, or DNS names eligible for the narrow exception policy. */
   allowedPrivateHosts?: string[]
+  /** Non-public IPv4 or IPv6 CIDRs eligible for literal destinations and DNS answers. */
+  allowedPrivateCidrs?: string[]
   /** Allow an exact allowlisted DNS name to resolve entirely to private addresses. */
   allowPrivateDns?: boolean
 }
@@ -58,6 +61,7 @@ export const Config: z<Config> = z.object({
   maxRedirects: z.number().default(5),
   userAgent: z.string().default(DEFAULT_USER_AGENT),
   allowedPrivateHosts: z.array(z.string()).default([]),
+  allowedPrivateCidrs: z.array(z.string()).default([]),
   allowPrivateDns: z.boolean().default(false),
 })
 
@@ -73,7 +77,7 @@ export function apply(ctx: Context, config: Config): void {
   if (resolved.userAgent.length === 0) {
     throw new Error('dsh-web-fetch-policy: userAgent must not be empty')
   }
-  const addressPolicy = createAddressAccessPolicy(resolved.allowedPrivateHosts, resolved.allowPrivateDns)
+  const addressPolicy = createAddressAccessPolicy(resolved.allowedPrivateHosts, resolved.allowPrivateDns, resolved.allowedPrivateCidrs)
   const limits: HttpFetchLimits = {
     maxResponseBytes: resolved.maxResponseBytes,
     maxBodyChars: resolved.maxBodyChars,

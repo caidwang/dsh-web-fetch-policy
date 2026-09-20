@@ -31,7 +31,15 @@ export type AddressResolver = (hostname: string, options: { all: true; order: 'v
 /** Validated, explicit exceptions to the public-address default. */
 export interface AddressAccessPolicy {
   readonly allowedPrivateHosts: ReadonlySet<string>
+  readonly allowedPrivateCidrs: readonly AllowedPrivateCidr[]
   readonly allowPrivateDns: boolean
+}
+
+/** A canonical non-public CIDR that may match URL literals and DNS answers. */
+export interface AllowedPrivateCidr {
+  readonly network: string
+  readonly family: 4 | 6
+  readonly prefixLength: number
 }
 
 type AddressClass = 'public' | 'private' | 'unsafe'
@@ -49,6 +57,7 @@ interface Nat64Prefix {
 export function createAddressAccessPolicy(
   configuredHosts: readonly string[],
   allowPrivateDns: boolean,
+  configuredCidrs: readonly string[] = [],
 ): AddressAccessPolicy {
   const allowedPrivateHosts = new Set<string>()
   for (const host of configuredHosts) {
@@ -58,7 +67,16 @@ export function createAddressAccessPolicy(
     }
     allowedPrivateHosts.add(normalized)
   }
-  return { allowedPrivateHosts, allowPrivateDns }
+  const allowedPrivateCidrs = configuredCidrs.map(normalizeAllowedPrivateCidr)
+  const seenCidrs = new Set<string>()
+  for (const cidr of allowedPrivateCidrs) {
+    const key = `${String(cidr.family)}:${cidr.network}/${String(cidr.prefixLength)}`
+    if (seenCidrs.has(key)) {
+      throw new Error(`dsh-web-fetch-policy: allowedPrivateCidrs contains duplicate CIDR "${key}"`)
+    }
+    seenCidrs.add(key)
+  }
+  return { allowedPrivateHosts, allowedPrivateCidrs, allowPrivateDns }
 }
 
 /** Normalize and validate one exact allowlist entry. Wildcards and ports are forbidden. */
@@ -87,6 +105,33 @@ export function normalizeAllowedPrivateHost(input: string): string {
   return normalized
 }
 
+/** Normalize and validate one non-public CIDR for literal destination matching. */
+export function normalizeAllowedPrivateCidr(input: string): AllowedPrivateCidr {
+  if (input.length === 0 || input.trim() !== input) {
+    throw new Error('dsh-web-fetch-policy: allowedPrivateCidrs entries must be CIDR strings without whitespace')
+  }
+  let parsed: [ipaddr.IPv4 | ipaddr.IPv6, number]
+  try {
+    parsed = ipaddr.parseCIDR(input)
+  } catch (error: unknown) {
+    throw new Error(`dsh-web-fetch-policy: allowedPrivateCidrs entry "${input}" must be a valid IPv4 or IPv6 CIDR`, { cause: error })
+  }
+  const [address, prefixLength] = parsed
+  const network = maskAddress(address, prefixLength)
+  if (network.toString() !== address.toString()) {
+    throw new Error(`dsh-web-fetch-policy: allowedPrivateCidrs entry "${input}" must use its network address`)
+  }
+  const last = lastAddress(network, prefixLength)
+  if (classifyIpAddress(network.toString()) !== 'private' || classifyIpAddress(last.toString()) !== 'private') {
+    throw new Error(`dsh-web-fetch-policy: allowedPrivateCidrs entry "${input}" must cover only connectable non-public unicast addresses`)
+  }
+  return {
+    network: network.toString(),
+    family: address.kind() === 'ipv4' ? 4 : 6,
+    prefixLength,
+  }
+}
+
 /** Return true only for globally reachable unicast IPv4/IPv6 addresses. */
 export function isPublicIpAddress(input: string): boolean {
   return classifyIpAddress(input) === 'public'
@@ -100,8 +145,9 @@ export function isNonPublicIpLiteral(hostname: string): boolean {
 
 /**
  * Resolve once, validate every answer, and return the fixed address set for a
- * later connection. A private DNS exception is accepted only when every answer
- * is private and the queried hostname is explicitly allowlisted.
+ * later connection. A private DNS exception requires either an exact hostname
+ * allowlist entry with `allowPrivateDns` or complete CIDR coverage of the
+ * non-public answer set.
  */
 export async function resolvePolicyAddresses(
   hostname: string,
@@ -153,11 +199,18 @@ export async function resolvePolicyAddresses(
   if (allPublic) return addresses
 
   const allPrivate = classes.every(addressClass => addressClass === 'private')
-  const literalAllowed = literalFamily !== 0 && policy.allowedPrivateHosts.has(normalizedHost)
+  const everyAddressAllowedByCidr = policy.allowedPrivateCidrs.length > 0
+    && addresses.every(({ address }) => policy.allowedPrivateCidrs.some(cidr => matchesCidr(address, cidr)))
+  const literalAllowed = literalFamily !== 0 && (
+    policy.allowedPrivateHosts.has(normalizedHost)
+    || everyAddressAllowedByCidr
+  )
   const privateDnsAllowed = literalFamily === 0
     && normalizedHost !== 'localhost'
-    && policy.allowPrivateDns
-    && policy.allowedPrivateHosts.has(normalizedHost)
+    && (
+      everyAddressAllowedByCidr
+      || (policy.allowPrivateDns && policy.allowedPrivateHosts.has(normalizedHost))
+    )
 
   // A DNS response containing both public and private addresses can shift the
   // request to a different network class. Reject it even for approved hosts.
@@ -289,15 +342,52 @@ function classifyIpAddress(input: string): AddressClass {
   if (parsed instanceof ipaddr.IPv4) {
     if (parsed.range() === 'unicast') return 'public'
     if (['unspecified', 'broadcast', 'multicast'].includes(parsed.range())) return 'unsafe'
-    // ipaddr.js groups 198.18.0.0/15 (RFC 2544 benchmarking, used by Clash
-    // Fake-IP) under `reserved`; it is connectable enough for an exact operator
-    // exception, unlike the rest of that broad reserved bucket.
+    // ipaddr.js groups 198.18.0.0/15 (RFC 2544 benchmarking) under `reserved`;
+    // it is connectable enough for an explicit operator exception, unlike the
+    // rest of that broad reserved bucket.
     if (parsed.range() === 'reserved' && !parsed.match(ipaddr.parse('198.18.0.0') as ipaddr.IPv4, 15)) return 'unsafe'
     return 'private'
   }
   if (parsed.isIPv4MappedAddress()) return classifyIpAddress(parsed.toIPv4Address().toString())
   if (parsed.range() === 'unicast') return 'public'
   return ['unspecified', 'multicast', 'reserved'].includes(parsed.range()) ? 'unsafe' : 'private'
+}
+
+/** Return whether one parsed literal falls inside a normalized allowlist CIDR. */
+function matchesCidr(input: string, cidr: AllowedPrivateCidr): boolean {
+  const address = ipaddr.parse(stripIpv6Brackets(input))
+  const network = ipaddr.parse(cidr.network)
+  return address.kind() === network.kind() && address.match(network, cidr.prefixLength)
+}
+
+/** Mask host bits so a CIDR can be compared with its canonical network. */
+function maskAddress(address: ipaddr.IPv4 | ipaddr.IPv6, prefixLength: number): ipaddr.IPv4 | ipaddr.IPv6 {
+  const bytes = address.toByteArray()
+  const firstHostByte = Math.floor(prefixLength / 8)
+  const remainingBits = prefixLength % 8
+  if (remainingBits !== 0) {
+    const current = bytes[firstHostByte]
+    if (current === undefined) throw new Error('invalid CIDR prefix length')
+    bytes[firstHostByte] = current & (0xff << (8 - remainingBits))
+  }
+  const zeroFrom = remainingBits === 0 ? firstHostByte : firstHostByte + 1
+  for (let index = zeroFrom; index < bytes.length; index++) bytes[index] = 0
+  return ipaddr.fromByteArray(bytes)
+}
+
+/** Compute the last address covered by a canonical CIDR. */
+function lastAddress(network: ipaddr.IPv4 | ipaddr.IPv6, prefixLength: number): ipaddr.IPv4 | ipaddr.IPv6 {
+  const bytes = network.toByteArray()
+  const firstHostByte = Math.floor(prefixLength / 8)
+  const remainingBits = prefixLength % 8
+  if (remainingBits !== 0) {
+    const current = bytes[firstHostByte]
+    if (current === undefined) throw new Error('invalid CIDR prefix length')
+    bytes[firstHostByte] = current | (0xff >>> remainingBits)
+  }
+  const fillFrom = remainingBits === 0 ? firstHostByte : firstHostByte + 1
+  for (let index = fillFrom; index < bytes.length; index++) bytes[index] = 0xff
+  return ipaddr.fromByteArray(bytes)
 }
 
 /** `localhost` may only use loopback answers; DNS must not widen that exception. */
