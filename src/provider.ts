@@ -3,8 +3,7 @@
 import { WebError } from '@deepseek-ai/dsh-web'
 import type { WebFetchBody, WebFetchProvider, WebFetchRequest, WebFetchResult } from '@deepseek-ai/dsh-web'
 import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
-import { proxyRouteFor } from '@deepseek-ai/dsh-http-proxy'
-import type { Response } from 'undici'
+import type { Dispatcher, Response } from 'undici'
 import { isNonPublicIpLiteral, policyHttpNetwork } from './network.js'
 import type { AddressAccessPolicy, ResolvedAddress } from './network.js'
 import { classifyContentType, decoderForCharset, isSameOrigin, parseCharset, validateFetchUrl } from './policy.js'
@@ -106,7 +105,7 @@ export class PolicyHttpFetchProvider implements WebFetchProvider {
       accept: 'text/html,application/xhtml+xml,text/*;q=0.9,application/json;q=0.8',
     }
     try {
-      const route = proxyRouteFor(url)
+      const route = await proxyRoute(url)
       // A proxy resolves a hostname remotely, so this preserves dsh's existing
       // proxy behavior. Non-public literals stay local: handing one to a local
       // proxy would bypass exactly the literal policy this provider owns.
@@ -183,6 +182,39 @@ export class PolicyHttpFetchProvider implements WebFetchProvider {
     }
     return { bytes, truncatedByBytes }
   }
+}
+
+/** A proxy route supplied by newer DSH releases when their optional utility is installed. */
+type ProxyRoute =
+  | { readonly proxied: false }
+  | { readonly proxied: true; readonly dispatcher: Dispatcher }
+
+/** Newer DSH versions expose proxy routing as an optional utility package. */
+interface HttpProxyModule {
+  proxyRouteFor(url: URL): ProxyRoute
+}
+
+/**
+ * Use the proxy route only on DSH releases that ship the optional proxy utility.
+ * Older releases, including the Desktop-bundled 0.1.2-rc.1, retain the direct,
+ * address-pinned fetch path.
+ */
+async function proxyRoute(url: URL): Promise<ProxyRoute> {
+  try {
+    const { proxyRouteFor } = await import('@deepseek-ai/dsh-http-proxy') as HttpProxyModule
+    return proxyRouteFor(url)
+  } catch (error: unknown) {
+    if (isMissingProxyUtility(error)) return { proxied: false }
+    throw error
+  }
+}
+
+/** Recognize only the absent optional package; initialization errors must remain visible. */
+function isMissingProxyUtility(error: unknown): boolean {
+  return error instanceof Error
+    && 'code' in error
+    && error.code === 'ERR_MODULE_NOT_FOUND'
+    && error.message.includes('@deepseek-ai/dsh-http-proxy')
 }
 
 /** Recognize redirect statuses whose Location is meaningful. */

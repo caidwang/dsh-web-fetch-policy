@@ -1,7 +1,7 @@
 # dsh-web-fetch-policy
 
 `dsh-web-fetch-policy` is an out-of-tree `ctx.web` HTTP(S) fetch provider for
-DeepSeek Harness 0.1.6-alpha.2. It starts public-only, then adds narrow,
+DeepSeek Harness 0.1.2-rc.1 and 0.1.6-alpha.2. It starts public-only, then adds narrow,
 auditable exceptions for exact non-public destinations while preserving DNS
 answer-set validation, address pinning, size limits, timeouts, and same-origin
 redirect checks.
@@ -77,10 +77,12 @@ same row:
 
 ## Proxy behavior
 
-For a hostname routed through `HTTP_PROXY`/`HTTPS_PROXY`, the proxy performs
-the origin lookup, so this provider retains DSH's proxy behavior and does not
-run a local public-IP check or pin a local origin address. A non-public IP
-literal does not take that shortcut: it uses the local policy and pinned path.
+On DSH 0.1.6-alpha.2, a hostname routed through `HTTP_PROXY`/`HTTPS_PROXY`
+uses the DSH proxy utility. The proxy performs the origin lookup, so the
+provider does not run a local public-IP check or pin a local origin address. A
+non-public IP literal does not take that shortcut: it uses the local policy and
+pinned path. DSH 0.1.2-rc.1 does not ship that utility, so the provider uses
+the direct, address-pinned path.
 
 This package governs `ctx.web.fetch()` only. It does not regulate network
 connections made by shell commands, browsers, MCP servers, or other plugins.
