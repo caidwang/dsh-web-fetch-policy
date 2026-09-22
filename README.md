@@ -1,107 +1,28 @@
 # dsh-web-fetch-policy
 
-`dsh-web-fetch-policy` is an out-of-tree `ctx.web` HTTP(S) fetch provider for
-DeepSeek Harness 0.1.2-rc.1 and 0.1.6-alpha.2. It starts public-only, then adds narrow,
-auditable exceptions for exact non-public destinations while preserving DNS
-answer-set validation, address pinning, size limits, timeouts, and same-origin
-redirect checks.
+[English](README.en.md)
 
-It registers as `policy-http`. Its bundle patch changes the existing `web` row
-to `fetchProvider: policy-http`; the standard `http` provider may stay loaded,
-but it is no longer selected.
+这是一个给 DeepSeek Harness `ctx.web` 使用的 HTTP(S) fetch provider，兼容 0.1.2-rc.1 和 0.1.6-alpha.2。默认只允许访问公网地址；需要访问本机或其他非公网地址时，可以通过配置明确放行目标。
 
-## Install
+## 解决 TUN 模式下的 web fetch 失败
+
+部分 TUN 网络环境会把公网域名解析成 `198.18.0.0/16` 内的 Fake-IP。provider 会把这段地址视为非公网地址，因此默认拦截。确认该地址段由本机网络接管后，在 profile 的 `cordis.patch.yml` 中加入：
+
+```yaml
+- id: web-fetch-policy
+  config:
+    allowedPrivateCidrs:
+      - 198.18.0.0/16
+```
+
+CIDR 白名单既匹配 URL 中直接出现的 IPv4 或 IPv6 地址，也匹配域名解析结果。对于域名，所有解析结果都必须是非公网地址并且全部落在已配置的 CIDR 内；混入公网地址或其他私网地址时仍会拦截。其他私网、回环、组播和未指定地址仍会被拦截。需要使用更宽的域名私网例外时，再同时配置 `allowedPrivateHosts` 和 `allowPrivateDns: true`。
+
+## 安装与配置
 
 ```sh
 dsh plugin --profile demo add github:caidwang/dsh-web-fetch-policy
 ```
 
-Git installation builds TypeScript with `prepare`. With pnpm 10 or newer, add
-the package to the profile's `pnpm-workspace.yaml` if pnpm asks for approval:
+bundle 会把 `ctx.web` 的 fetch provider 设为 `policy-http`。在 DSH Web 或 DSH Desktop 中，插件会出现在“设置 → 插件”，可直接编辑 CIDR、精确主机和私网 DNS 放行；保存后新发起的 web fetch 立即使用新配置。完整的安装步骤、配置字段和限制请参阅 [English README](README.en.md)。
 
-```yaml
-allowBuilds:
-  dsh-web-fetch-policy: true
-```
-
-Then run the same `dsh plugin ... add` command again. Treat that approval as
-permission to execute this repository's build script; pin a commit SHA in a
-production install. Publishing to npm or installing a packed tarball uses the
-prebuilt `lib/` files and does not need this build approval.
-
-## Configure explicit exceptions
-
-The bundle inserts a row named `web-fetch-policy`. Override that row in the
-profile's `cordis.patch.yml`:
-
-```yaml
-- id: web-fetch-policy
-  config:
-    allowedPrivateHosts:
-      - 127.0.0.1
-      - localhost
-      - api.corp.example
-    allowedPrivateCidrs:
-      - 198.18.0.0/16 # only when this reserved range is an intentional local target
-    allowPrivateDns: true
-```
-
-`allowedPrivateHosts` contains exact hostnames or IP literals only. Wildcards,
-URLs, CIDR ranges, ports, public IPs, unspecified addresses, and multicast
-addresses fail plugin load. `allowedPrivateCidrs` contains canonical IPv4 or
-IPv6 network ranges and can match a literal URL IP or DNS answers. For a DNS
-name, every answer must be non-public and inside an allowed CIDR; a public
-answer or an answer from another non-public range rejects the request. Both
-lists accept only connectable non-public destinations. An exact listed
-non-public literal works with the default `allowPrivateDns: false`. A listed
-`localhost` may resolve only to loopback addresses. A normal DNS hostname can
-use `allowPrivateDns: true` with an exact `allowedPrivateHosts` entry when a
-broader private-DNS exception is intended.
-
-When private DNS is enabled, every answer for the exact listed hostname must be
-connectable and non-public. A response containing both public and non-public
-answers is rejected. The accepted full answer set is passed to a request-local
-DNS lookup, so the subsequent connection cannot re-resolve the hostname to a
-different address. Each allowed same-origin redirect repeats this process.
-
-All other provider limits retain the standard defaults and can be set on the
-same row:
-
-| Field | Default |
-| --- | ---: |
-| `maxResponseBytes` | 5,000,000 |
-| `maxBodyChars` | 100,000 |
-| `timeoutMs` | 30,000 |
-| `maxRedirects` | 5 |
-| `userAgent` | `dsh-web-fetch-policy/...` |
-
-## Proxy behavior
-
-On DSH 0.1.6-alpha.2, a hostname routed through `HTTP_PROXY`/`HTTPS_PROXY`
-uses the DSH proxy utility. The proxy performs the origin lookup, so the
-provider does not run a local public-IP check or pin a local origin address. A
-non-public IP literal does not take that shortcut: it uses the local policy and
-pinned path. DSH 0.1.2-rc.1 does not ship that utility, so the provider uses
-the direct, address-pinned path.
-
-This package governs `ctx.web.fetch()` only. It does not regulate network
-connections made by shell commands, browsers, MCP servers, or other plugins.
-
-## Source attribution
-
-This implementation is derived from
-[`@deepseek-ai/dsh-web-fetch-http`](https://github.com/deepseek-ai/deepseek-harness/tree/main/packages/web/web-fetch-http),
-including its address pinning, DNS64 handling, proxy routing, redirects, and
-bounded text decoding paths. Those portions are MIT licensed; see
-[LICENSE](LICENSE).
-
-## Development
-
-Use Node `^22.19.0` or `>=24.0.0`.
-
-```sh
-pnpm install
-pnpm test
-pnpm typecheck
-pnpm build
-```
+在 0.1.6-alpha.2 中，如果 DSH 提供 HTTP 代理工具，普通域名会沿用代理路由；0.1.2-rc.1 不带该工具，provider 会使用直连且地址固定的请求路径。

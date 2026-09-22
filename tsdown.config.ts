@@ -1,8 +1,8 @@
 import { defineConfig } from 'tsdown'
 
-export default defineConfig({
+const host = {
   entry: ['src/index.ts'],
-  format: 'esm',
+  format: 'esm' as const,
   dts: true,
   sourcemap: true,
   clean: true,
@@ -18,4 +18,23 @@ export default defineConfig({
       'undici',
     ],
   },
-})
+}
+
+const client = {
+  entry: { client: 'src/client.ts' },
+  format: 'cjs' as const,
+  platform: 'browser' as const,
+  dts: false,
+  sourcemap: true,
+  clean: false,
+  outDir: 'client',
+  deps: { neverBundle: ['react'] },
+  outputOptions: {
+    entryFileNames: 'client.js',
+    banner: 'window.__ModuleLoader__.load({ id: "dsh-web-fetch-policy", factory: (require) => {',
+    footer: 'return module.exports; } });',
+    intro: 'var module = { exports: {} }; var exports = module.exports;',
+  },
+}
+
+export default defineConfig([host, client])
